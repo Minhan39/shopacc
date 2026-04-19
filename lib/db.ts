@@ -1,74 +1,121 @@
-import { Pool } from 'pg';
+import { neon } from '@neondatabase/serverless';
+import { createClient } from '@supabase/supabase-js';
 
 type SupportedTable = 'users' | 'accounts';
-
 type MirrorMode = 'strict' | 'best-effort';
+type QueryRow = Record<string, unknown>;
+type QueryResult<T extends QueryRow = QueryRow> = { rows: T[] };
 
-const primaryConnectionString = process.env.DATABASE_URL;
-const mirrorConnectionString = process.env.MIRROR_DATABASE_URL;
+type QueryClient = {
+  query<T extends QueryRow = QueryRow>(text: string, params?: unknown[]): Promise<QueryResult<T>>;
+  release(): void;
+};
 
-const primaryPool = new Pool({
-  connectionString: primaryConnectionString,
-});
-
-const mirrorPool = mirrorConnectionString
-  ? new Pool({
-      connectionString: mirrorConnectionString,
-    })
-  : null;
+type QueryPool = {
+  connect(): Promise<QueryClient>;
+  query<T extends QueryRow = QueryRow>(text: string, params?: unknown[]): Promise<QueryResult<T>>;
+};
 
 const mirrorMode: MirrorMode = process.env.DB_MIRROR_STRICT === 'true' ? 'strict' : 'best-effort';
 
-export default primaryPool;
+let primarySqlInstance: ReturnType<typeof neon> | null = null;
+let mirrorClientInstance: ReturnType<typeof createClient> | null | undefined;
+
+function getPrimarySql() {
+  if (primarySqlInstance) {
+    return primarySqlInstance;
+  }
+
+  const connectionString = process.env.DATABASE_URL;
+  if (!connectionString) {
+    throw new Error('Missing DATABASE_URL');
+  }
+
+  primarySqlInstance = neon(connectionString);
+  return primarySqlInstance;
+}
+
+function getMirrorClient() {
+  if (mirrorClientInstance !== undefined) {
+    return mirrorClientInstance;
+  }
+
+  const supabaseUrl = process.env.SUPABASE_URL;
+  const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+  if (!supabaseUrl || !supabaseServiceRoleKey) {
+    mirrorClientInstance = null;
+    return mirrorClientInstance;
+  }
+
+  mirrorClientInstance = createClient(supabaseUrl, supabaseServiceRoleKey, {
+    auth: {
+      autoRefreshToken: false,
+      persistSession: false,
+    },
+    global: {
+      fetch: fetch.bind(globalThis),
+    },
+  });
+
+  return mirrorClientInstance;
+}
+
+async function queryPrimary<T extends QueryRow = QueryRow>(text: string, params: unknown[] = []): Promise<QueryResult<T>> {
+  const rows = await getPrimarySql().query(text, params) as T[];
+  return { rows };
+}
+
+function createClientAdapter(): QueryClient {
+  return {
+    query: queryPrimary,
+    release() {},
+  };
+}
+
+const pool: QueryPool = {
+  async connect() {
+    return createClientAdapter();
+  },
+  query: queryPrimary,
+};
+
+export default pool;
 
 export function getPrimaryPool() {
-  return primaryPool;
+  return pool;
 }
 
 export function hasMirrorDatabase() {
-  return Boolean(mirrorPool);
+  return Boolean(getMirrorClient());
 }
 
 function toMirrorErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : 'Unknown mirror error';
 }
 
-function getColumnsAndValues(row: Record<string, unknown>) {
-  const entries = Object.entries(row).filter(([, value]) => value !== undefined);
-  const columns = entries.map(([column]) => column);
-  const values = entries.map(([, value]) => value);
-
-  return { columns, values };
-}
-
 async function mirrorUpsert(table: SupportedTable, row: Record<string, unknown>) {
-  if (!mirrorPool) return;
+  const client = getMirrorClient();
+  if (!client) return;
 
-  const { columns, values } = getColumnsAndValues(row);
-  if (columns.length === 0) return;
-
-  const quotedColumns = columns.map((column) => `"${column}"`);
-  const placeholders = columns.map((_, index) => `$${index + 1}`);
-  const updateColumns = columns
-    .filter((column) => column !== 'id')
-    .map((column) => `"${column}" = EXCLUDED."${column}"`);
-
-  const query = `
-    INSERT INTO "${table}" (${quotedColumns.join(', ')})
-    VALUES (${placeholders.join(', ')})
-    ON CONFLICT ("id") DO UPDATE SET ${updateColumns.join(', ')}
-  `;
-
-  await mirrorPool.query(query, values);
+  const { error } = await client.from(table).upsert(row, { onConflict: 'id' });
+  if (error) {
+    throw new Error(error.message);
+  }
 }
 
 async function mirrorDeleteById(table: SupportedTable, id: number) {
-  if (!mirrorPool) return;
-  await mirrorPool.query(`DELETE FROM "${table}" WHERE id = $1`, [id]);
+  const client = getMirrorClient();
+  if (!client) return;
+
+  const { error } = await client.from(table).delete().eq('id', id);
+  if (error) {
+    throw new Error(error.message);
+  }
 }
 
 async function handleMirrorOperation(operation: () => Promise<void>) {
-  if (!mirrorPool) return;
+  if (!getMirrorClient()) return;
 
   try {
     await operation();
@@ -89,45 +136,37 @@ export async function syncMirrorDelete(table: SupportedTable, id: number) {
   await handleMirrorOperation(() => mirrorDeleteById(table, id));
 }
 
-async function initSchema(pool: Pool) {
-  const client = await pool.connect();
-  try {
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS users (
-        id SERIAL PRIMARY KEY,
-        name VARCHAR(100) NOT NULL,
-        username VARCHAR(50) UNIQUE NOT NULL,
-        password VARCHAR(255) NOT NULL,
-        role VARCHAR(20) NOT NULL CHECK (role IN ('seller', 'creator')),
-        created_at TIMESTAMP DEFAULT NOW()
-      );
+async function initSchemaWithQueries(query: QueryClient['query']) {
+  await query(`
+    CREATE TABLE IF NOT EXISTS users (
+      id SERIAL PRIMARY KEY,
+      name VARCHAR(100) NOT NULL,
+      username VARCHAR(50) UNIQUE NOT NULL,
+      password VARCHAR(255) NOT NULL,
+      role VARCHAR(20) NOT NULL CHECK (role IN ('seller', 'creator')),
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
 
-      CREATE TABLE IF NOT EXISTS accounts (
-        id SERIAL PRIMARY KEY,
-        account VARCHAR(255) NOT NULL,
-        temp_password VARCHAR(255) NOT NULL,
-        received_at TIMESTAMP NOT NULL,
-        status VARCHAR(20) NOT NULL DEFAULT 'unsold' CHECK (status IN ('unsold', 'sold')),
-        sold_at TIMESTAMP,
-        warranty_expires_at TIMESTAMP,
-        buyer_contact VARCHAR(255),
-        proof_images TEXT[],
-        created_by INTEGER REFERENCES users(id),
-        sold_by INTEGER REFERENCES users(id),
-        created_at TIMESTAMP DEFAULT NOW()
-      );
-    `);
-  } finally {
-    client.release();
-  }
+  await query(`
+    CREATE TABLE IF NOT EXISTS accounts (
+      id SERIAL PRIMARY KEY,
+      account VARCHAR(255) NOT NULL,
+      temp_password VARCHAR(255) NOT NULL,
+      received_at TIMESTAMP NOT NULL,
+      status VARCHAR(20) NOT NULL DEFAULT 'unsold' CHECK (status IN ('unsold', 'sold')),
+      sold_at TIMESTAMP,
+      warranty_expires_at TIMESTAMP,
+      buyer_contact VARCHAR(255),
+      proof_images TEXT[],
+      created_by INTEGER REFERENCES users(id),
+      sold_by INTEGER REFERENCES users(id),
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
 }
 
 export async function initDB() {
-  await initSchema(primaryPool);
-
-  if (mirrorPool) {
-    await initSchema(mirrorPool);
-  }
-
-  console.log(`DB initialized${mirrorPool ? ' with mirror enabled' : ''}`);
+  await initSchemaWithQueries(queryPrimary);
+  console.log(`DB initialized${getMirrorClient() ? ' with Supabase mirror enabled' : ''}`);
 }
