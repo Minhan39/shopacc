@@ -1,8 +1,21 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { verifyToken } from './auth';
 
+function getTokenFromRequest(req: NextRequest) {
+  const cookieToken = req.cookies.get('token')?.value;
+  if (cookieToken) return cookieToken;
+
+  const authorization = req.headers.get('authorization');
+  if (!authorization) return null;
+
+  const [scheme, token] = authorization.split(' ');
+  if (scheme?.toLowerCase() !== 'bearer' || !token) return null;
+
+  return token.trim();
+}
+
 export function getUser(req: NextRequest) {
-  const token = req.cookies.get('token')?.value;
+  const token = getTokenFromRequest(req);
   if (!token) return null;
   return verifyToken(token);
 }

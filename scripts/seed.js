@@ -1,17 +1,22 @@
 #!/usr/bin/env node
+/* eslint-disable @typescript-eslint/no-require-imports */
 // Run: node scripts/seed.js
-// Creates default admin user: admin / admin123
+
+require('./load-env');
 
 const { Pool } = require('pg');
 const bcrypt = require('bcryptjs');
 
-const pool = new Pool({ connectionString: process.env.DATABASE_URL || 'postgresql://postgres:abcd%401234@localhost:5432/accshop' });
+const primaryConnectionString =
+  process.env.DATABASE_URL || 'postgresql://postgres:abcd%401234@localhost:5432/accshop';
+const mirrorConnectionString = process.env.MIRROR_DATABASE_URL;
 
-async function seed() {
+const primaryPool = new Pool({ connectionString: primaryConnectionString });
+const mirrorPool = mirrorConnectionString ? new Pool({ connectionString: mirrorConnectionString }) : null;
+
+async function initSchema(pool) {
   const client = await pool.connect();
   try {
-    console.log('🔧 Initializing database...');
-
     await client.query(`
       CREATE TABLE IF NOT EXISTS users (
         id SERIAL PRIMARY KEY,
@@ -37,32 +42,64 @@ async function seed() {
         created_at TIMESTAMP DEFAULT NOW()
       );
     `);
-
-    // Create default creator admin
-    const hashed = bcrypt.hashSync('abcd@1234', 10);
-    await client.query(`
-      INSERT INTO users (name, username, password, role)
-      VALUES ('Admin', 'admin', $1, 'creator')
-      ON CONFLICT (username) DO NOTHING
-    `, [hashed]);
-
-    // Create default seller
-    const sellerPass = bcrypt.hashSync('abcd@1234', 10);
-    await client.query(`
-      INSERT INTO users (name, username, password, role)
-      VALUES ('Người bán', 'seller', $1, 'seller')
-      ON CONFLICT (username) DO NOTHING
-    `, [sellerPass]);
-
-    console.log('✅ Database initialized!');
-    console.log('');
-    console.log('📌 Default accounts:');
-    console.log('   Creator: admin / abcd@1234');
-    console.log('   Seller:  seller / abcd@1234');
   } finally {
     client.release();
-    await pool.end();
   }
 }
 
-seed().catch(err => { console.error('❌ Seed failed:', err.message); process.exit(1); });
+async function seedUsers(pool) {
+  const client = await pool.connect();
+  try {
+    const creatorPassword = bcrypt.hashSync('abcd@1234', 10);
+    await client.query(
+      `
+        INSERT INTO users (name, username, password, role)
+        VALUES ('Admin', 'admin', $1, 'creator')
+        ON CONFLICT (username) DO NOTHING
+      `,
+      [creatorPassword]
+    );
+
+    const sellerPassword = bcrypt.hashSync('abcd@1234', 10);
+    await client.query(
+      `
+        INSERT INTO users (name, username, password, role)
+        VALUES ('Nguoi ban', 'seller', $1, 'seller')
+        ON CONFLICT (username) DO NOTHING
+      `,
+      [sellerPassword]
+    );
+  } finally {
+    client.release();
+  }
+}
+
+async function seed() {
+  try {
+    console.log('Initializing primary database...');
+    await initSchema(primaryPool);
+    await seedUsers(primaryPool);
+
+    if (mirrorPool) {
+      console.log('Initializing mirror database...');
+      await initSchema(mirrorPool);
+      await seedUsers(mirrorPool);
+    }
+
+    console.log('Database initialized successfully.');
+    console.log('Default accounts:');
+    console.log('Creator: admin / abcd@1234');
+    console.log('Seller: seller / abcd@1234');
+  } finally {
+    await primaryPool.end();
+
+    if (mirrorPool) {
+      await mirrorPool.end();
+    }
+  }
+}
+
+seed().catch((error) => {
+  console.error('Seed failed:', error.message);
+  process.exit(1);
+});

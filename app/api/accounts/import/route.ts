@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
-import pool from '@/lib/db';
+import pool, { syncMirrorRow } from '@/lib/db';
 import { requireAuth } from '@/lib/middleware';
+import { encryptAccountSecret, hydrateAccountSecret } from '@/lib/account-secret';
 
 export async function POST(req: NextRequest) {
   const { error, user } = requireAuth(req);
@@ -26,12 +27,14 @@ export async function POST(req: NextRequest) {
   try {
     const inserted = [];
     for (const pair of pairs) {
+      const encryptedTempPassword = encryptAccountSecret(pair.temp_password);
       const res = await client.query(
         `INSERT INTO accounts (account, temp_password, received_at, status, created_by)
          VALUES ($1, $2, NOW(), 'unsold', $3) RETURNING *`,
-        [pair.account, pair.temp_password, user.id]
+        [pair.account, encryptedTempPassword, user.id]
       );
-      inserted.push(res.rows[0]);
+      await syncMirrorRow('accounts', res.rows[0]);
+      inserted.push(hydrateAccountSecret(res.rows[0]));
     }
     return NextResponse.json({ inserted: inserted.length, accounts: inserted });
   } finally {
