@@ -52,19 +52,30 @@ type DailyRow = { date: string; count: string };
 type MonthlyRow = { month: string; count: string };
 type CreatorStatsRow = { name: string; username: string; created: string; sold: string | null };
 
-const databaseUrl = process.env.DATABASE_URL;
-
-if (!databaseUrl) {
-  throw new Error('Missing DATABASE_URL');
-}
-
-const sql = neon(databaseUrl);
 const mirrorMode: MirrorMode = process.env.DB_MIRROR_STRICT === 'true' ? 'strict' : 'best-effort';
 
+let sqlInstance: ReturnType<typeof neon> | null = null;
 let mirrorConfigInstance: { url: string; serviceRoleKey: string } | null | undefined;
 
-export { sql };
 export type { SupportedTable, UserRole };
+
+function getDatabaseUrl() {
+  const databaseUrl = process.env.DATABASE_URL;
+
+  if (!databaseUrl) {
+    throw new Error('Missing DATABASE_URL');
+  }
+
+  return databaseUrl;
+}
+
+function getSql() {
+  if (!sqlInstance) {
+    sqlInstance = neon(getDatabaseUrl());
+  }
+
+  return sqlInstance;
+}
 
 function getMirrorConfig() {
   if (mirrorConfigInstance !== undefined) {
@@ -165,6 +176,8 @@ export async function syncMirrorDelete(table: SupportedTable, id: number) {
 }
 
 export async function listUsers() {
+  const sql = getSql();
+
   return (await sql`
     SELECT id, name, username, role, created_at
     FROM users
@@ -173,6 +186,7 @@ export async function listUsers() {
 }
 
 export async function findUserByUsername(username: string) {
+  const sql = getSql();
   const rows = (await sql`
     SELECT id, name, username, password, role, created_at
     FROM users
@@ -189,6 +203,7 @@ export async function createUser(input: {
   password: string;
   role: UserRole;
 }) {
+  const sql = getSql();
   const rows = (await sql`
     INSERT INTO users (name, username, password, role)
     VALUES (${input.name}, ${input.username}, ${input.password}, ${input.role})
@@ -203,6 +218,7 @@ export async function createUser(input: {
 }
 
 export async function listAccounts(filters: { status?: AccountStatus | null; search?: string | null } = {}) {
+  const sql = getSql();
   let query = `
     SELECT a.*,
       uc.name as creator_name, uc.username as creator_username,
@@ -230,6 +246,7 @@ export async function listAccounts(filters: { status?: AccountStatus | null; sea
 }
 
 export async function getAccountById(id: number) {
+  const sql = getSql();
   const rows = (await sql`
     SELECT a.*,
       uc.name as creator_name, uc.username as creator_username,
@@ -248,6 +265,7 @@ export async function createAccount(input: {
   temp_password: string;
   created_by: number;
 }) {
+  const sql = getSql();
   const rows = (await sql`
     INSERT INTO accounts (account, temp_password, received_at, status, created_by)
     VALUES (${input.account}, ${input.temp_password}, NOW(), 'unsold', ${input.created_by})
@@ -267,6 +285,7 @@ export async function updateAccountSale(input: {
   proof_images: string[];
   sold_by: number;
 }) {
+  const sql = getSql();
   const rows = (await sql`
     UPDATE accounts
     SET status = 'sold',
@@ -288,6 +307,7 @@ export async function updateAccountSale(input: {
 }
 
 export async function deleteAccountById(id: number) {
+  const sql = getSql();
   const rows = (await sql`
     DELETE FROM accounts
     WHERE id = ${id}
@@ -320,6 +340,7 @@ export async function importAccounts(
 }
 
 export async function getStats(): Promise<StatsResponse> {
+  const sql = getSql();
   const [totalRows, soldRows, unsoldRows, dailyRows, monthlyRows, byCreatorRows] = (await sql.transaction([
     sql`SELECT COUNT(*) as count FROM accounts`,
     sql`SELECT COUNT(*) as count FROM accounts WHERE status = 'sold'`,
@@ -373,6 +394,7 @@ export async function getStats(): Promise<StatsResponse> {
 }
 
 export async function initDB() {
+  const sql = getSql();
   await sql`
     CREATE TABLE IF NOT EXISTS users (
       id SERIAL PRIMARY KEY,
