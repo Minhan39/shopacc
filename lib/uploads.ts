@@ -1,6 +1,6 @@
 import path from 'path';
 
-const DEFAULT_UPLOAD_DIR = path.join(process.cwd(), 'public', 'uploads');
+const DEFAULT_UPLOAD_DIR = path.join(/*turbopackIgnore: true*/ process.cwd(), 'public', 'uploads');
 const DEFAULT_UPLOAD_PUBLIC_BASE = '/api/uploads';
 
 const MIME_TYPES: Record<string, string> = {

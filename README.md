@@ -1,59 +1,47 @@
-# AccShop — Hệ thống Quản lý Tài khoản Bán hàng
+# AccShop
 
-Phần mềm quản lý tài khoản bán hàng, NextJS + PostgreSQL, 2 vai trò: Người tạo & Người bán.
+He thong quan ly tai khoan ban hang xay dung bang Next.js, dung Neon/Postgres lam database chinh va Supabase REST lam mirror.
 
-## Cài đặt nhanh
+## Cai dat nhanh
 
-### 1. Cài packages
+### 1. Cai packages
 ```bash
 npm install
 ```
 
-### 2. Tạo file .env.local
-```
-DATABASE_URL=postgresql://postgres:postgres@localhost:5432/accshop
+### 2. Tao file .env.local
+```env
+DATABASE_URL=postgresql://postgres:password@host:5432/database
+NEXT_PUBLIC_SUPABASE_URL=https://your-project-ref.supabase.co
+NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=your_publishable_key_here
+SUPABASE_SERVICE_ROLE_KEY=your_service_role_key_here
 JWT_SECRET=your_secret_key_here
+ACCOUNT_SECRET_KEY=replace_with_base64_32_byte_key
+DB_MIRROR_STRICT=false
 ```
 
-### 3. Tạo database & seed
+### 3. Seed du lieu mac dinh
 ```bash
-createdb accshop
 node scripts/seed.js
 ```
 
-### 4. Chạy
+### 4. Chay ung dung
 ```bash
 npm run dev
-# Mở http://localhost:3000
 ```
 
-## Tài khoản mặc định
-| Vai trò | Username | Password |
+Mo http://localhost:3000
+
+## Tai khoan mac dinh
+
+| Vai tro | Username | Password |
 |---------|----------|----------|
-| Creator (Admin) | admin | admin123 |
-| Seller | seller | seller123 |
+| Creator | admin | abcd@1234 |
+| Seller | seller | abcd@1234 |
 
-## Tính năng
+## Luu y
 
-### Người tạo (Creator)
-- Thêm tài khoản đơn lẻ (tài khoản + mật khẩu tạm)
-- Import hàng loạt bằng text (tk1 / mk1 / tk2 / mk2...)
-- Quản lý người dùng (tạo seller/creator)
-
-### Người bán (Seller)
-- Xem kho tài khoản, tìm kiếm & lọc
-- Đánh dấu đã bán + ngày bán
-- Nhập thông tin người mua (Facebook, Zalo...)
-- Upload ảnh minh chứng
-
-### Dashboard
-- Biểu đồ bán hàng 30 ngày (Line chart)
-- Biểu đồ tỷ lệ đã/chưa bán (Pie chart)
-- Biểu đồ doanh số theo tháng (Bar chart)
-- Thống kê theo người tạo
-
-## Tech Stack
-- **Next.js 14** (App Router) + TypeScript
-- **PostgreSQL** + pg driver
-- **Recharts** (biểu đồ)
-- **JWT** + bcryptjs (auth)
+- `DATABASE_URL` la nguon du lieu chinh cho toan bo API runtime.
+- Supabase chi duoc dung de mirror du lieu sau khi ghi thanh cong vao primary database.
+- `SUPABASE_SERVICE_ROLE_KEY` duoc dung cho server-side mirror sync. `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` giu lai cho cac nhu cau client-side neu can.
+- Neu `DB_MIRROR_STRICT=true`, moi loi mirror se lam request ghi that bai. Mac dinh la best-effort.

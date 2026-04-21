@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import pool, { syncMirrorRow } from '@/lib/db';
+import { createUser, listUsers } from '@/lib/db';
 import { hashPassword } from '@/lib/auth';
 import { requireAuth } from '@/lib/middleware';
 
@@ -7,13 +7,8 @@ export async function GET(req: NextRequest) {
   const { error } = requireAuth(req);
   if (error) return error;
 
-  const client = await pool.connect();
-  try {
-    const res = await client.query('SELECT id, name, username, role, created_at FROM users ORDER BY created_at DESC');
-    return NextResponse.json({ users: res.rows });
-  } finally {
-    client.release();
-  }
+  const users = await listUsers();
+  return NextResponse.json({ users });
 }
 
 export async function POST(req: NextRequest) {
@@ -29,31 +24,26 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Role khong hop le' }, { status: 400 });
   }
 
-  const client = await pool.connect();
   try {
     const hashed = hashPassword(password);
-    const res = await client.query(
-      'INSERT INTO users (name, username, password, role) VALUES ($1, $2, $3, $4) RETURNING id, name, username, role, created_at',
-      [name, username, hashed, role]
-    );
-
-    await syncMirrorRow('users', {
-      id: res.rows[0].id,
-      name: res.rows[0].name,
-      username: res.rows[0].username,
+    const user = await createUser({
+      name,
+      username,
       password: hashed,
-      role: res.rows[0].role,
-      created_at: res.rows[0].created_at,
+      role,
     });
 
-    return NextResponse.json({ user: res.rows[0] }, { status: 201 });
+    return NextResponse.json({ user }, { status: 201 });
   } catch (err: unknown) {
-    if (typeof err === 'object' && err !== null && 'code' in err && err.code === '23505') {
+    if (
+      typeof err === 'object' &&
+      err !== null &&
+      (('code' in err && (err.code === '23505' || err.code === '409')) ||
+        ('status' in err && err.status === 409))
+    ) {
       return NextResponse.json({ error: 'Username da ton tai' }, { status: 409 });
     }
 
     throw err;
-  } finally {
-    client.release();
   }
 }

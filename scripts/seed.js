@@ -7,12 +7,50 @@ require('./load-env');
 const { Pool } = require('pg');
 const bcrypt = require('bcryptjs');
 
-const primaryConnectionString =
-  process.env.DATABASE_URL || 'postgresql://postgres:abcd%401234@localhost:5432/accshop';
-const mirrorConnectionString = process.env.MIRROR_DATABASE_URL;
+function getPrimaryPool() {
+  const connectionString = process.env.DATABASE_URL;
 
-const primaryPool = new Pool({ connectionString: primaryConnectionString });
-const mirrorPool = mirrorConnectionString ? new Pool({ connectionString: mirrorConnectionString }) : null;
+  if (!connectionString) {
+    throw new Error('Missing DATABASE_URL');
+  }
+
+  return new Pool({ connectionString });
+}
+
+function getMirrorConfig() {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SECRET_KEY;
+
+  if (!url || !serviceRoleKey) {
+    return null;
+  }
+
+  return {
+    url: url.replace(/\/$/, ''),
+    serviceRoleKey,
+  };
+}
+
+async function mirrorUpsert(table, row) {
+  const config = getMirrorConfig();
+  if (!config) return;
+
+  const response = await fetch(`${config.url}/rest/v1/${table}?on_conflict=id`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      apikey: config.serviceRoleKey,
+      Authorization: `Bearer ${config.serviceRoleKey}`,
+      Prefer: 'resolution=merge-duplicates,return=minimal',
+    },
+    body: JSON.stringify(row),
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text || `Failed to mirror ${table}`);
+  }
+}
 
 async function initSchema(pool) {
   const client = await pool.connect();
@@ -50,52 +88,61 @@ async function initSchema(pool) {
 async function seedUsers(pool) {
   const client = await pool.connect();
   try {
-    const creatorPassword = bcrypt.hashSync('abcd@1234', 10);
-    await client.query(
-      `
-        INSERT INTO users (name, username, password, role)
-        VALUES ('Admin', 'admin', $1, 'creator')
-        ON CONFLICT (username) DO NOTHING
-      `,
-      [creatorPassword]
-    );
+    const defaults = [
+      {
+        name: 'Admin',
+        username: 'admin',
+        password: bcrypt.hashSync('abcd@1234', 10),
+        role: 'creator',
+      },
+      {
+        name: 'Nguoi ban',
+        username: 'seller',
+        password: bcrypt.hashSync('abcd@1234', 10),
+        role: 'seller',
+      },
+    ];
 
-    const sellerPassword = bcrypt.hashSync('abcd@1234', 10);
-    await client.query(
-      `
-        INSERT INTO users (name, username, password, role)
-        VALUES ('Nguoi ban', 'seller', $1, 'seller')
-        ON CONFLICT (username) DO NOTHING
-      `,
-      [sellerPassword]
-    );
+    for (const user of defaults) {
+      const result = await client.query(
+        `
+          INSERT INTO users (name, username, password, role)
+          VALUES ($1, $2, $3, $4)
+          ON CONFLICT (username) DO UPDATE
+          SET name = EXCLUDED.name,
+              password = EXCLUDED.password,
+              role = EXCLUDED.role
+          RETURNING id, name, username, password, role, created_at
+        `,
+        [user.name, user.username, user.password, user.role]
+      );
+
+      await mirrorUpsert('users', result.rows[0]);
+      console.log(`Upserted user: ${user.username}`);
+    }
   } finally {
     client.release();
   }
 }
 
 async function seed() {
+  const pool = getPrimaryPool();
+
   try {
     console.log('Initializing primary database...');
-    await initSchema(primaryPool);
-    await seedUsers(primaryPool);
+    await initSchema(pool);
+    await seedUsers(pool);
 
-    if (mirrorPool) {
-      console.log('Initializing mirror database...');
-      await initSchema(mirrorPool);
-      await seedUsers(mirrorPool);
+    if (getMirrorConfig()) {
+      console.log('Supabase mirror sync enabled.');
     }
 
-    console.log('Database initialized successfully.');
+    console.log('Seed completed.');
     console.log('Default accounts:');
     console.log('Creator: admin / abcd@1234');
     console.log('Seller: seller / abcd@1234');
   } finally {
-    await primaryPool.end();
-
-    if (mirrorPool) {
-      await mirrorPool.end();
-    }
+    await pool.end();
   }
 }
 

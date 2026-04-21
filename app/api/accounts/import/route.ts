@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import pool, { syncMirrorRow } from '@/lib/db';
+import { importAccounts } from '@/lib/db';
 import { requireAuth } from '@/lib/middleware';
 import { encryptAccountSecret, hydrateAccountSecret } from '@/lib/account-secret';
 
@@ -23,21 +23,16 @@ export async function POST(req: NextRequest) {
     pairs.push({ account: lines[i], temp_password: lines[i + 1] });
   }
 
-  const client = await pool.connect();
   try {
-    const inserted = [];
-    for (const pair of pairs) {
-      const encryptedTempPassword = encryptAccountSecret(pair.temp_password);
-      const res = await client.query(
-        `INSERT INTO accounts (account, temp_password, received_at, status, created_by)
-         VALUES ($1, $2, NOW(), 'unsold', $3) RETURNING *`,
-        [pair.account, encryptedTempPassword, user.id]
-      );
-      await syncMirrorRow('accounts', res.rows[0]);
-      inserted.push(hydrateAccountSecret(res.rows[0]));
-    }
-    return NextResponse.json({ inserted: inserted.length, accounts: inserted });
-  } finally {
-    client.release();
+    const inserted = await importAccounts(
+      pairs.map((pair) => ({
+        account: pair.account,
+        temp_password: encryptAccountSecret(pair.temp_password),
+        created_by: user.id,
+      }))
+    );
+    return NextResponse.json({ inserted: inserted.length, accounts: inserted.map(hydrateAccountSecret) });
+  } catch {
+    return NextResponse.json({ error: 'Khong the import tai khoan' }, { status: 500 });
   }
 }

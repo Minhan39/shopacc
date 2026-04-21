@@ -1,6 +1,26 @@
 import { NextRequest, NextResponse } from 'next/server';
-import pool from '@/lib/db';
+import { findUserByUsername } from '@/lib/db';
 import { verifyPassword, signToken } from '@/lib/auth';
+
+function getLoginErrorMessage(error: unknown) {
+  if (!(error instanceof Error)) {
+    return 'Khong the dang nhap luc nay';
+  }
+
+  const message = error.message.toLowerCase();
+
+  if (process.env.NODE_ENV !== 'production') {
+    if (message.includes('password authentication failed')) {
+      return 'Ket noi database that bai: DATABASE_URL dang sai user hoac password.';
+    }
+
+    if (message.includes('getaddrinfo') || message.includes('enotfound') || message.includes('econnrefused')) {
+      return 'Ket noi database that bai: khong the truy cap host trong DATABASE_URL.';
+    }
+  }
+
+  return 'Khong the dang nhap luc nay';
+}
 
 export async function POST(req: NextRequest) {
   let body: { username?: string; password?: string };
@@ -18,10 +38,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Thieu username hoac password' }, { status: 400 });
   }
 
-  const client = await pool.connect();
   try {
-    const res = await client.query('SELECT * FROM users WHERE username = $1', [username]);
-    const user = res.rows[0];
+    const user = await findUserByUsername(username);
 
     if (!user || !verifyPassword(password, user.password)) {
       return NextResponse.json({ error: 'Sai tai khoan hoac mat khau' }, { status: 401 });
@@ -52,9 +70,8 @@ export async function POST(req: NextRequest) {
     });
 
     return response;
-  } catch {
-    return NextResponse.json({ error: 'Khong the dang nhap luc nay' }, { status: 500 });
-  } finally {
-    client.release();
+  } catch (error) {
+    console.error('[auth/login]', error);
+    return NextResponse.json({ error: getLoginErrorMessage(error) }, { status: 500 });
   }
 }
