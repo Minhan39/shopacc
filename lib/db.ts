@@ -1,4 +1,4 @@
-import { Pool } from 'pg';
+import { neon } from '@neondatabase/serverless';
 
 type SupportedTable = 'users' | 'accounts';
 type UserRole = 'seller' | 'creator';
@@ -50,26 +50,21 @@ type StatsResponse = {
 type CountRow = { count: string };
 type DailyRow = { date: string; count: string };
 type MonthlyRow = { month: string; count: string };
-type CreatorStatsRow = { name: string; username: string; created: string; sold: string };
+type CreatorStatsRow = { name: string; username: string; created: string; sold: string | null };
 
+const databaseUrl = process.env.DATABASE_URL;
+
+if (!databaseUrl) {
+  throw new Error('Missing DATABASE_URL');
+}
+
+const sql = neon(databaseUrl);
 const mirrorMode: MirrorMode = process.env.DB_MIRROR_STRICT === 'true' ? 'strict' : 'best-effort';
 
-let primaryPoolInstance: Pool | null = null;
 let mirrorConfigInstance: { url: string; serviceRoleKey: string } | null | undefined;
 
-function getPrimaryPool() {
-  if (primaryPoolInstance) {
-    return primaryPoolInstance;
-  }
-
-  const connectionString = process.env.DATABASE_URL;
-  if (!connectionString) {
-    throw new Error('Missing DATABASE_URL');
-  }
-
-  primaryPoolInstance = new Pool({ connectionString });
-  return primaryPoolInstance;
-}
+export { sql };
+export type { SupportedTable, UserRole };
 
 function getMirrorConfig() {
   if (mirrorConfigInstance !== undefined) {
@@ -170,18 +165,22 @@ export async function syncMirrorDelete(table: SupportedTable, id: number) {
 }
 
 export async function listUsers() {
-  const result = await getPrimaryPool().query<PublicUserRow>(
-    'SELECT id, name, username, role, created_at FROM users ORDER BY created_at DESC'
-  );
-  return result.rows;
+  return (await sql`
+    SELECT id, name, username, role, created_at
+    FROM users
+    ORDER BY created_at DESC
+  `) as PublicUserRow[];
 }
 
 export async function findUserByUsername(username: string) {
-  const result = await getPrimaryPool().query<UserAuthRow>(
-    'SELECT id, name, username, password, role, created_at FROM users WHERE username = $1 LIMIT 1',
-    [username]
-  );
-  return result.rows[0] ?? null;
+  const rows = (await sql`
+    SELECT id, name, username, password, role, created_at
+    FROM users
+    WHERE username = ${username}
+    LIMIT 1
+  `) as UserAuthRow[];
+
+  return rows[0] ?? null;
 }
 
 export async function createUser(input: {
@@ -190,14 +189,13 @@ export async function createUser(input: {
   password: string;
   role: UserRole;
 }) {
-  const result = await getPrimaryPool().query<UserAuthRow>(
-    `INSERT INTO users (name, username, password, role)
-     VALUES ($1, $2, $3, $4)
-     RETURNING id, name, username, password, role, created_at`,
-    [input.name, input.username, input.password, input.role]
-  );
+  const rows = (await sql`
+    INSERT INTO users (name, username, password, role)
+    VALUES (${input.name}, ${input.username}, ${input.password}, ${input.role})
+    RETURNING id, name, username, password, role, created_at
+  `) as UserAuthRow[];
 
-  const created = result.rows[0];
+  const created = rows[0];
   await syncMirrorRow('users', created);
 
   const { password: _password, ...user } = created;
@@ -214,7 +212,7 @@ export async function listAccounts(filters: { status?: AccountStatus | null; sea
     LEFT JOIN users us ON a.sold_by = us.id
     WHERE 1=1
   `;
-  const params: Array<string> = [];
+  const params: unknown[] = [];
 
   if (filters.status) {
     params.push(filters.status);
@@ -228,23 +226,21 @@ export async function listAccounts(filters: { status?: AccountStatus | null; sea
 
   query += ' ORDER BY a.created_at DESC';
 
-  const result = await getPrimaryPool().query<AccountRow>(query, params);
-  return result.rows;
+  return (await sql.query(query, params)) as AccountRow[];
 }
 
 export async function getAccountById(id: number) {
-  const result = await getPrimaryPool().query<AccountRow>(
-    `SELECT a.*,
+  const rows = (await sql`
+    SELECT a.*,
       uc.name as creator_name, uc.username as creator_username,
       us.name as seller_name, us.username as seller_username
-     FROM accounts a
-     LEFT JOIN users uc ON a.created_by = uc.id
-     LEFT JOIN users us ON a.sold_by = us.id
-     WHERE a.id = $1`,
-    [id]
-  );
+    FROM accounts a
+    LEFT JOIN users uc ON a.created_by = uc.id
+    LEFT JOIN users us ON a.sold_by = us.id
+    WHERE a.id = ${id}
+  `) as AccountRow[];
 
-  return result.rows[0] ?? null;
+  return rows[0] ?? null;
 }
 
 export async function createAccount(input: {
@@ -252,14 +248,13 @@ export async function createAccount(input: {
   temp_password: string;
   created_by: number;
 }) {
-  const result = await getPrimaryPool().query<AccountRow>(
-    `INSERT INTO accounts (account, temp_password, received_at, status, created_by)
-     VALUES ($1, $2, NOW(), 'unsold', $3)
-     RETURNING *`,
-    [input.account, input.temp_password, input.created_by]
-  );
+  const rows = (await sql`
+    INSERT INTO accounts (account, temp_password, received_at, status, created_by)
+    VALUES (${input.account}, ${input.temp_password}, NOW(), 'unsold', ${input.created_by})
+    RETURNING *
+  `) as AccountRow[];
 
-  const created = result.rows[0];
+  const created = rows[0];
   await syncMirrorRow('accounts', created);
   return created;
 }
@@ -272,27 +267,19 @@ export async function updateAccountSale(input: {
   proof_images: string[];
   sold_by: number;
 }) {
-  const result = await getPrimaryPool().query<AccountRow>(
-    `UPDATE accounts SET
-      status = 'sold',
-      sold_at = $1,
-      warranty_expires_at = $2,
-      buyer_contact = $3,
-      proof_images = $4,
-      sold_by = $5
-     WHERE id = $6
-     RETURNING *`,
-    [
-      input.sold_at,
-      input.warranty_expires_at,
-      input.buyer_contact,
-      input.proof_images,
-      input.sold_by,
-      input.id,
-    ]
-  );
+  const rows = (await sql`
+    UPDATE accounts
+    SET status = 'sold',
+        sold_at = ${input.sold_at},
+        warranty_expires_at = ${input.warranty_expires_at},
+        buyer_contact = ${input.buyer_contact},
+        proof_images = ${input.proof_images},
+        sold_by = ${input.sold_by}
+    WHERE id = ${input.id}
+    RETURNING *
+  `) as AccountRow[];
 
-  const updated = result.rows[0] ?? null;
+  const updated = rows[0] ?? null;
   if (updated) {
     await syncMirrorRow('accounts', updated);
   }
@@ -301,12 +288,13 @@ export async function updateAccountSale(input: {
 }
 
 export async function deleteAccountById(id: number) {
-  const result = await getPrimaryPool().query<{ id: number }>(
-    'DELETE FROM accounts WHERE id = $1 RETURNING id',
-    [id]
-  );
+  const rows = (await sql`
+    DELETE FROM accounts
+    WHERE id = ${id}
+    RETURNING id
+  `) as Array<{ id: number }>;
 
-  const deleted = result.rows[0] ?? null;
+  const deleted = rows[0] ?? null;
   if (deleted) {
     await syncMirrorDelete('accounts', id);
   }
@@ -320,39 +308,37 @@ export async function importAccounts(
   const inserted: AccountRow[] = [];
 
   for (const row of rows) {
-    inserted.push(
-      await createAccount({
-        account: row.account,
-        temp_password: row.temp_password,
-        created_by: row.created_by,
-      })
-    );
+    const created = await createAccount({
+      account: row.account,
+      temp_password: row.temp_password,
+      created_by: row.created_by,
+    });
+    inserted.push(created);
   }
 
   return inserted;
 }
 
 export async function getStats(): Promise<StatsResponse> {
-  const pool = getPrimaryPool();
-  const [total, sold, unsold, daily, monthly, byCreator] = await Promise.all([
-    pool.query<CountRow>('SELECT COUNT(*) as count FROM accounts'),
-    pool.query<CountRow>("SELECT COUNT(*) as count FROM accounts WHERE status = 'sold'"),
-    pool.query<CountRow>("SELECT COUNT(*) as count FROM accounts WHERE status = 'unsold'"),
-    pool.query<DailyRow>(`
+  const [totalRows, soldRows, unsoldRows, dailyRows, monthlyRows, byCreatorRows] = (await sql.transaction([
+    sql`SELECT COUNT(*) as count FROM accounts`,
+    sql`SELECT COUNT(*) as count FROM accounts WHERE status = 'sold'`,
+    sql`SELECT COUNT(*) as count FROM accounts WHERE status = 'unsold'`,
+    sql`
       SELECT DATE(sold_at) as date, COUNT(*) as count
       FROM accounts
       WHERE status = 'sold' AND sold_at > NOW() - INTERVAL '30 days'
       GROUP BY DATE(sold_at)
       ORDER BY date ASC
-    `),
-    pool.query<MonthlyRow>(`
+    `,
+    sql`
       SELECT TO_CHAR(sold_at, 'YYYY-MM') as month, COUNT(*) as count
       FROM accounts
       WHERE status = 'sold' AND sold_at > NOW() - INTERVAL '12 months'
       GROUP BY TO_CHAR(sold_at, 'YYYY-MM')
       ORDER BY month ASC
-    `),
-    pool.query<CreatorStatsRow>(`
+    `,
+    sql`
       SELECT u.name, u.username,
         COUNT(a.id) as created,
         SUM(CASE WHEN a.status = 'sold' THEN 1 ELSE 0 END) as sold
@@ -360,24 +346,24 @@ export async function getStats(): Promise<StatsResponse> {
       LEFT JOIN accounts a ON a.created_by = u.id
       WHERE u.role = 'creator'
       GROUP BY u.id, u.name, u.username
-    `),
-  ]);
+    `,
+  ])) as [CountRow[], CountRow[], CountRow[], DailyRow[], MonthlyRow[], CreatorStatsRow[]];
 
   return {
     summary: {
-      total: parseInt(total.rows[0]?.count ?? '0', 10),
-      sold: parseInt(sold.rows[0]?.count ?? '0', 10),
-      unsold: parseInt(unsold.rows[0]?.count ?? '0', 10),
+      total: parseInt(totalRows[0]?.count ?? '0', 10),
+      sold: parseInt(soldRows[0]?.count ?? '0', 10),
+      unsold: parseInt(unsoldRows[0]?.count ?? '0', 10),
     },
-    daily: daily.rows.map((row) => ({
+    daily: dailyRows.map((row) => ({
       date: row.date,
       count: parseInt(row.count, 10),
     })),
-    monthly: monthly.rows.map((row) => ({
+    monthly: monthlyRows.map((row) => ({
       month: row.month,
       count: parseInt(row.count, 10),
     })),
-    byCreator: byCreator.rows.map((row) => ({
+    byCreator: byCreatorRows.map((row) => ({
       name: row.name,
       username: row.username,
       created: parseInt(row.created, 10),
@@ -386,10 +372,8 @@ export async function getStats(): Promise<StatsResponse> {
   };
 }
 
-async function initSchema() {
-  const pool = getPrimaryPool();
-
-  await pool.query(`
+export async function initDB() {
+  await sql`
     CREATE TABLE IF NOT EXISTS users (
       id SERIAL PRIMARY KEY,
       name VARCHAR(100) NOT NULL,
@@ -397,10 +381,10 @@ async function initSchema() {
       password VARCHAR(255) NOT NULL,
       role VARCHAR(20) NOT NULL CHECK (role IN ('seller', 'creator')),
       created_at TIMESTAMP DEFAULT NOW()
-    );
-  `);
+    )
+  `;
 
-  await pool.query(`
+  await sql`
     CREATE TABLE IF NOT EXISTS accounts (
       id SERIAL PRIMARY KEY,
       account VARCHAR(255) NOT NULL,
@@ -414,11 +398,8 @@ async function initSchema() {
       created_by INTEGER REFERENCES users(id),
       sold_by INTEGER REFERENCES users(id),
       created_at TIMESTAMP DEFAULT NOW()
-    );
-  `);
-}
+    )
+  `;
 
-export async function initDB() {
-  await initSchema();
   console.log(`DB initialized${getMirrorConfig() ? ' with Supabase mirror enabled' : ''}`);
 }

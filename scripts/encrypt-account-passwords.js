@@ -4,10 +4,32 @@
 require('./load-env');
 
 const crypto = require('crypto');
-const { Pool } = require('pg');
+const { neon } = require('@neondatabase/serverless');
 
 const ENCRYPTION_PREFIX = 'enc:v1';
 const IV_LENGTH = 12;
+
+const databaseUrl = process.env.DATABASE_URL;
+
+if (!databaseUrl) {
+  throw new Error('Missing DATABASE_URL');
+}
+
+const sql = neon(databaseUrl);
+
+function getMirrorConfig() {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SECRET_KEY;
+
+  if (!url || !serviceRoleKey) {
+    return null;
+  }
+
+  return {
+    url: url.replace(/\/$/, ''),
+    serviceRoleKey,
+  };
+}
 
 function getAccountSecretKey() {
   const secret = process.env.ACCOUNT_SECRET_KEY;
@@ -37,49 +59,53 @@ function encryptAccountSecret(value) {
   return `${ENCRYPTION_PREFIX}:${iv.toString('base64')}:${authTag.toString('base64')}:${encrypted.toString('base64')}`;
 }
 
-async function encryptPool(pool, label) {
-  const client = await pool.connect();
-  try {
-    const res = await client.query(`
-      SELECT id, temp_password
-      FROM accounts
-      WHERE temp_password IS NOT NULL
-        AND temp_password <> ''
-        AND temp_password NOT LIKE '${ENCRYPTION_PREFIX}:%'
-    `);
+async function mirrorUpdateAccount(id, tempPassword) {
+  const config = getMirrorConfig();
+  if (!config) return;
 
-    for (const row of res.rows) {
-      await client.query('UPDATE accounts SET temp_password = $1 WHERE id = $2', [
-        encryptAccountSecret(row.temp_password),
-        row.id,
-      ]);
-    }
+  const response = await fetch(`${config.url}/rest/v1/accounts?id=eq.${encodeURIComponent(String(id))}`, {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json',
+      apikey: config.serviceRoleKey,
+      Authorization: `Bearer ${config.serviceRoleKey}`,
+      Prefer: 'return=minimal',
+    },
+    body: JSON.stringify({
+      temp_password: tempPassword,
+    }),
+  });
 
-    console.log(`${label}: encrypted ${res.rows.length} account password(s).`);
-  } finally {
-    client.release();
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text || `Failed to mirror account ${id}`);
   }
 }
 
-async function main() {
-  const primaryPool = new Pool({ connectionString: process.env.DATABASE_URL });
-  const mirrorPool = process.env.MIRROR_DATABASE_URL
-    ? new Pool({ connectionString: process.env.MIRROR_DATABASE_URL })
-    : null;
+async function encryptPrimary(label) {
+  const rows = await sql`
+    SELECT id, temp_password
+    FROM accounts
+    WHERE temp_password IS NOT NULL
+      AND temp_password <> ''
+      AND temp_password NOT LIKE ${`${ENCRYPTION_PREFIX}:%`}
+  `;
 
-  try {
-    await encryptPool(primaryPool, 'primary');
-
-    if (mirrorPool) {
-      await encryptPool(mirrorPool, 'mirror');
-    }
-  } finally {
-    await primaryPool.end();
-
-    if (mirrorPool) {
-      await mirrorPool.end();
-    }
+  for (const row of rows) {
+    const encrypted = encryptAccountSecret(row.temp_password);
+    await sql`
+      UPDATE accounts
+      SET temp_password = ${encrypted}
+      WHERE id = ${row.id}
+    `;
+    await mirrorUpdateAccount(row.id, encrypted);
   }
+
+  console.log(`${label}: encrypted ${rows.length} account password(s).`);
+}
+
+async function main() {
+  await encryptPrimary('primary');
 }
 
 main().catch((error) => {
