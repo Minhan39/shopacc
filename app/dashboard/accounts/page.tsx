@@ -31,6 +31,10 @@ function toDateTimeLocalValue(d: Date) {
   const pad = (value: number) => value.toString().padStart(2, '0');
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
+function toClientISOString(dateTimeLocalValue: string) {
+  const date = new Date(dateTimeLocalValue);
+  return Number.isNaN(date.getTime()) ? dateTimeLocalValue : date.toISOString();
+}
 function getWarrantyExpiresAt(soldAtValue: string) {
   if (!soldAtValue) return '';
   const soldAt = new Date(soldAtValue);
@@ -102,10 +106,17 @@ export default function AccountsPage() {
   async function handleSell(e: React.FormEvent) {
     e.preventDefault();
     if (!showSell) return;
+    const soldAt = sellForm.sold_at || toDateTimeLocalValue(new Date());
+    const warrantyExpiresAt = sellForm.warranty_expires_at || getWarrantyExpiresAt(soldAt);
+    const payload = {
+      ...sellForm,
+      sold_at: toClientISOString(soldAt),
+      warranty_expires_at: warrantyExpiresAt ? toClientISOString(warrantyExpiresAt) : '',
+    };
     const res = await fetch(`/api/accounts/${showSell.id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(sellForm),
+      body: JSON.stringify(payload),
     });
     if (res.ok) {
       toast('Cập nhật thành công! Tài khoản đã được đánh dấu đã bán ✅');
