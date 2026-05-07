@@ -25,7 +25,21 @@ function fmt(d: string | null) {
 function fmtFull(d: string | null) {
   if (!d) return '';
   const dt = new Date(d);
-  return dt.toISOString().slice(0, 16);
+  return toDateTimeLocalValue(dt);
+}
+function toDateTimeLocalValue(d: Date) {
+  const pad = (value: number) => value.toString().padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+function getWarrantyExpiresAt(soldAtValue: string) {
+  if (!soldAtValue) return '';
+  const soldAt = new Date(soldAtValue);
+  if (Number.isNaN(soldAt.getTime())) return '';
+
+  const expiresAt = new Date(soldAt);
+  expiresAt.setFullYear(expiresAt.getFullYear() + 1);
+  expiresAt.setHours(12, 0, 0, 0);
+  return toDateTimeLocalValue(expiresAt);
 }
 
 export default function AccountsPage() {
@@ -117,13 +131,22 @@ export default function AccountsPage() {
   }
 
   function openSell(acc: Account) {
+    const soldAt = acc.sold_at ? fmtFull(acc.sold_at) : toDateTimeLocalValue(new Date());
     setShowSell(acc);
     setSellForm({
-      sold_at: acc.sold_at ? fmtFull(acc.sold_at) : fmtFull(new Date().toISOString()),
-      warranty_expires_at: acc.warranty_expires_at ? fmtFull(acc.warranty_expires_at) : '',
+      sold_at: soldAt,
+      warranty_expires_at: getWarrantyExpiresAt(soldAt),
       buyer_contact: acc.buyer_contact || '',
       proof_images: acc.proof_images || [],
     });
+  }
+
+  function updateSoldAt(soldAt: string) {
+    setSellForm(f => ({
+      ...f,
+      sold_at: soldAt,
+      warranty_expires_at: getWarrantyExpiresAt(soldAt),
+    }));
   }
 
   return (
@@ -280,7 +303,7 @@ export default function AccountsPage() {
             <form onSubmit={handleSell} style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
               <div>
                 <label style={{ display: 'block', fontSize: '13px', fontWeight: '600', color: 'var(--text2)', marginBottom: '6px' }}>Ngày bán</label>
-                <input className="input" type="datetime-local" value={sellForm.sold_at} onChange={e => setSellForm(f => ({ ...f, sold_at: e.target.value }))} />
+                <input className="input" type="datetime-local" value={sellForm.sold_at} onChange={e => updateSoldAt(e.target.value)} />
               </div>
               <div>
                 <label style={{ display: 'block', fontSize: '13px', fontWeight: '600', color: 'var(--text2)', marginBottom: '6px' }}>Ngày hết hạn bảo hành</label>

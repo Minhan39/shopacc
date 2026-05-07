@@ -21,9 +21,22 @@ function badRequest(error: string) {
   return NextResponse.json({ error }, { status: 400 });
 }
 
+function toDateTimeLocalValue(date: Date) {
+  const pad = (value: number) => value.toString().padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}:00`;
+}
+
+function getDefaultWarrantyExpiresAtValue(soldAt: Date) {
+  const expiresAt = new Date(soldAt);
+  expiresAt.setFullYear(expiresAt.getFullYear() + 1);
+  expiresAt.setHours(12, 0, 0, 0);
+  return toDateTimeLocalValue(expiresAt);
+}
+
 export function normalizeSalePayload(payload: AccountSalePayload) {
   const soldAt = payload.sold_at ? new Date(payload.sold_at) : new Date();
-  const warrantyExpiresAt = payload.warranty_expires_at ? new Date(payload.warranty_expires_at) : null;
+  const warrantyExpiresAtValue = payload.warranty_expires_at || getDefaultWarrantyExpiresAtValue(soldAt);
+  const warrantyExpiresAt = new Date(warrantyExpiresAtValue);
 
   if (Number.isNaN(soldAt.getTime())) {
     return { error: badRequest('sold_at khong hop le') };
@@ -49,7 +62,7 @@ export function normalizeSalePayload(payload: AccountSalePayload) {
   return {
     value: {
       soldAt: soldAt.toISOString(),
-      warrantyExpiresAt: warrantyExpiresAt?.toISOString() ?? null,
+      warrantyExpiresAt: warrantyExpiresAtValue,
       buyerContact: payload.buyer_contact?.trim() || null,
       proofImages,
     },
