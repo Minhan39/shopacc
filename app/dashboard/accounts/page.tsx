@@ -42,6 +42,9 @@ function getWarrantyExpiresAt(soldAtValue: string) {
   return toDateTimeLocalValue(expiresAt);
 }
 
+const DEFAULT_SALE_AMOUNT = '60000';
+const DEFAULT_SALE_NOTE = 'OFFICE WOKU';
+
 export default function AccountsPage() {
   const { user, toast } = useUser();
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -52,7 +55,14 @@ export default function AccountsPage() {
   const [showSell, setShowSell] = useState<Account | null>(null);
   const [showDetail, setShowDetail] = useState<Account | null>(null);
   const [addForm, setAddForm] = useState({ account: '', temp_password: '' });
-  const [sellForm, setSellForm] = useState({ sold_at: '', warranty_expires_at: '', buyer_contact: '', proof_images: [] as string[] });
+  const [sellForm, setSellForm] = useState({
+    sold_at: '',
+    warranty_expires_at: '',
+    buyer_contact: '',
+    proof_images: [] as string[],
+    sale_amount: DEFAULT_SALE_AMOUNT,
+    sale_note: DEFAULT_SALE_NOTE,
+  });
   const [uploadingImg, setUploadingImg] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const [showImg, setShowImg] = useState<string | null>(null);
@@ -100,7 +110,7 @@ export default function AccountsPage() {
     if (res.ok) {
       toast('Cập nhật thành công! Tài khoản đã được đánh dấu đã bán ✅');
       setShowSell(null);
-      setSellForm({ sold_at: '', warranty_expires_at: '', buyer_contact: '', proof_images: [] });
+      setSellForm({ sold_at: '', warranty_expires_at: '', buyer_contact: '', proof_images: [], sale_amount: DEFAULT_SALE_AMOUNT, sale_note: DEFAULT_SALE_NOTE });
       load();
     } else {
       const d = await res.json();
@@ -138,6 +148,8 @@ export default function AccountsPage() {
       warranty_expires_at: getWarrantyExpiresAt(soldAt),
       buyer_contact: acc.buyer_contact || '',
       proof_images: acc.proof_images || [],
+      sale_amount: DEFAULT_SALE_AMOUNT,
+      sale_note: DEFAULT_SALE_NOTE,
     });
   }
 
@@ -313,6 +325,18 @@ export default function AccountsPage() {
                 <label style={{ display: 'block', fontSize: '13px', fontWeight: '600', color: 'var(--text2)', marginBottom: '6px' }}>Liên hệ người mua (Facebook, Zalo...)</label>
                 <input className="input" placeholder="VD: https://facebook.com/..." value={sellForm.buyer_contact} onChange={e => setSellForm(f => ({ ...f, buyer_contact: e.target.value }))} />
               </div>
+              {showSell.status !== 'sold' && (
+                <>
+                  <div>
+                    <label style={{ display: 'block', fontSize: '13px', fontWeight: '600', color: 'var(--text2)', marginBottom: '6px' }}>Số tiền</label>
+                    <input className="input" type="number" min="0" step="1000" placeholder="Nhập số tiền..." value={sellForm.sale_amount} onChange={e => setSellForm(f => ({ ...f, sale_amount: e.target.value }))} required />
+                  </div>
+                  <div>
+                    <label style={{ display: 'block', fontSize: '13px', fontWeight: '600', color: 'var(--text2)', marginBottom: '6px' }}>Ghi chú</label>
+                    <textarea className="input" rows={3} placeholder="Ghi chú cho service..." value={sellForm.sale_note} onChange={e => setSellForm(f => ({ ...f, sale_note: e.target.value }))} />
+                  </div>
+                </>
+              )}
               <div>
                 <label style={{ display: 'block', fontSize: '13px', fontWeight: '600', color: 'var(--text2)', marginBottom: '6px' }}>Ảnh minh chứng</label>
                 <input ref={fileRef} type="file" multiple accept="image/*" style={{ display: 'none' }} onChange={e => e.target.files && uploadImages(e.target.files)} />

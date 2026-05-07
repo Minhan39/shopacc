@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { deleteAccountById, getAccountById, updateAccountSale } from '@/lib/db';
 import { requireAuth } from '@/lib/middleware';
 import { hydrateAccountSecret } from '@/lib/account-secret';
+import { addSaleToFirebase } from '@/lib/firebase-sale-service';
 import { normalizeSalePayload, parseAccountId } from '../helpers';
 
 export async function GET(req: NextRequest, context: { params: Promise<{ id: string }> }) {
@@ -48,6 +49,8 @@ export async function PATCH(req: NextRequest, context: { params: Promise<{ id: s
     warranty_expires_at?: string | null;
     buyer_contact?: string | null;
     proof_images?: string[] | null;
+    sale_amount?: string | number | null;
+    sale_note?: string | null;
   };
 
   try {
@@ -66,6 +69,10 @@ export async function PATCH(req: NextRequest, context: { params: Promise<{ id: s
       return NextResponse.json({ error: 'Khong tim thay tai khoan' }, { status: 404 });
     }
 
+    if (existing.status !== 'sold' && normalized.value.firebaseSale.saleAmount === null) {
+      return NextResponse.json({ error: 'Vui long nhap so tien' }, { status: 400 });
+    }
+
     const updated = await updateAccountSale({
       id: accountId,
       sold_at: normalized.value.soldAt,
@@ -77,6 +84,10 @@ export async function PATCH(req: NextRequest, context: { params: Promise<{ id: s
 
     if (!updated) {
       return NextResponse.json({ error: 'Khong the cap nhat tai khoan' }, { status: 500 });
+    }
+
+    if (existing.status !== 'sold') {
+      await addSaleToFirebase(updated, normalized.value.firebaseSale);
     }
 
     return NextResponse.json({
